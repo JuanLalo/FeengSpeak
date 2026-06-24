@@ -317,28 +317,27 @@ def play_chime_end():
 
 
 # ── procesamiento de texto ──
-def is_mostly_code(text):
-    code_blocks = re.findall(r'```[\s\S]*?```', text)
-    code_chars = sum(len(b) for b in code_blocks)
-    return len(text) > 0 and (code_chars / len(text)) > 0.5
 
 
-def _inline_code(m):
-    """Código inline: conserva el texto si es un término/identificador simple
-    (commit, em_alex, kokoro-onnx) para que se lea; descarta rutas/comandos."""
-    inner = m.group(1)
-    return f' {inner} ' if re.fullmatch(r'[\w.+\-]{1,40}', inner) else ' '
+MAX_CODE_READ = 200   # bloques cercados más largos que esto se anuncian, no se leen
+
+
+def _fenced(m):
+    """Bloque cercado: corto se lee; largo (>200 chars o >5 líneas) se anuncia."""
+    inner = m.group(1).strip()
+    largo = len(inner) > MAX_CODE_READ or inner.count('\n') > 5
+    return ' bloque de código. ' if largo else f' {inner}. '
 
 
 def clean_for_speech(text):
-    text = re.sub(r'```[\s\S]*?```', '', text)
-    text = re.sub(r'`([^`]+)`', _inline_code, text)
+    text = re.sub(r'```[^\n]*\n?([\s\S]*?)```', _fenced, text)
+    text = re.sub(r'`([^`]+)`', r' \1 ', text)         # inline: leer contenido
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'[*_#>|]', '', text)
-    text = re.sub(r'\|[^\n]+\|', '', text)
+    text = re.sub(r'https?://\S+', ' enlace ', text)
     text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*[-•]\s+', '', text, flags=re.MULTILINE)
+    text = text.replace('|', ' ')                       # tablas: leer celdas
+    text = re.sub(r'[*#>]', '', text)                   # markdown (conserva _)
     text = re.sub(r'\n{2,}', '. ', text)
     text = re.sub(r'\n', ' ', text)
     text = re.sub(r'\s{2,}', ' ', text)
@@ -1123,8 +1122,6 @@ def main():
                 msg_text = data.get("last_assistant_message", "") or raw
         except (json.JSONDecodeError, TypeError):
             msg_text = raw
-        if is_mostly_code(msg_text):
-            sys.exit(0)
         text = msg_text
 
     if not text or not text.strip() or is_stub(text):

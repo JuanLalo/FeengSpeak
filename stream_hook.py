@@ -79,28 +79,31 @@ def _send(payload, timeout=0.8):
         return False
 
 
-def _inline_code(m):
-    """Código inline: conserva el texto si es un término/identificador simple
-    (p.ej. commit, em_alex, kokoro-onnx) para que SÍ se lea; descarta si es
-    ruido (rutas, comandos con espacios o símbolos)."""
-    inner = m.group(1)
-    return f" {inner} " if re.fullmatch(r"[\w.+\-]{1,40}", inner) else " "
+MAX_CODE_READ = 200   # bloques cercados más largos que esto se anuncian, no se leen
+
+
+def _fenced(m):
+    """Bloque cercado: corto se lee; largo (>200 chars o >5 líneas) se anuncia."""
+    inner = m.group(1).strip()
+    largo = len(inner) > MAX_CODE_READ or inner.count("\n") > 5
+    return " bloque de código. " if largo else f" {inner}. "
 
 
 def _clean_stream(raw):
-    """Limpia para voz, conservando estado de bloque de código: si hay un fence
-    sin cerrar, retiene desde ahí (no lee código a medio escribir)."""
-    s = re.sub(r"```[\s\S]*?```", " ", raw)   # bloques completos fuera
+    """Limpia para voz. Lee TODO lo que comunica el agente (inline, rutas,
+    comandos); solo omite bloques de código largos. Si hay un fence sin cerrar,
+    retiene desde ahí (no lee código a medio escribir)."""
+    s = re.sub(r"```[^\n]*\n?([\s\S]*?)```", _fenced, raw)
     i = s.find("```")
     if i != -1:
         s = s[:i]                              # fence abierto: retén el resto
-    s = re.sub(r"`([^`]+)`", _inline_code, s)
+    s = re.sub(r"`([^`]+)`", r" \1 ", s)       # inline: leer el contenido
     s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
-    s = re.sub(r"https?://\S+", " ", s)
+    s = re.sub(r"https?://\S+", " enlace ", s)
     s = re.sub(r"^\s*\d+\.\s+", "", s, flags=re.M)
     s = re.sub(r"^\s*[-•]\s+", "", s, flags=re.M)
-    s = re.sub(r"\|[^\n]+\|", " ", s)
-    s = re.sub(r"[*_#>`|]", "", s)
+    s = s.replace("|", " ")                    # tablas: leer celdas, quitar pipes
+    s = re.sub(r"[*#>`]", "", s)               # markdown (conserva _ de identificadores)
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
