@@ -80,6 +80,7 @@ def _send(payload, timeout=0.8):
 
 
 MAX_CODE_READ = 200   # bloques cercados más largos que esto se anuncian, no se leen
+MIN_CHUNK = 60        # mínimo de caracteres por bloque enviado (evita fragmentos diminutos)
 
 
 def _fenced(m):
@@ -144,12 +145,12 @@ def main():
     if state.get("turn_id") != tid:
         if _daemon_alive():
             _send({"op": "reset_stream"})
-        state = {"turn_id": tid, "message_id": None, "raw": "", "spoken": []}
+        state = {"turn_id": tid, "message_id": None, "raw": "", "sent": 0}
     # Nuevo mensaje dentro del turno → reinicia buffer (sin cortar audio).
     if state.get("message_id") != mid:
         state["message_id"] = mid
         state["raw"] = ""
-        state["spoken"] = []
+        state["sent"] = 0
 
     state["raw"] += delta
     cleaned = _clean_stream(state["raw"])
@@ -159,19 +160,32 @@ def main():
     if parts and not final and not _ENDS_TERM.search(cleaned):
         parts = parts[:-1]
 
-    spoken = state["spoken"]
-    new = [p for p in parts if p not in spoken and _speakable(p)]
-    if new:
+    # Agrupa oraciones en bloques de mínimo MIN_CHUNK caracteres antes de
+    # mandarlas: evita fragmentos diminutos (ej. "Listo.") que generan un hueco
+    # mientras se sintetiza el siguiente. Bloques más largos dejan que la
+    # síntesis vaya adelantada → reproducción fluida sin pausas en los puntos.
+    sent = state.get("sent", 0)
+    unsent = parts[sent:]
+    if unsent:
         if not _daemon_alive():
-            # Pre-calienta sin bloquear el render; estas oraciones se reintentan
-            # en el siguiente delta cuando el daemon ya esté listo.
+            # Pre-calienta sin bloquear el render; se reintenta al siguiente delta.
             _spawn_daemon()
         else:
-            for sent in new:
-                if _send({"op": "speak_stream", "text": sent}):
-                    spoken.append(sent)
+            chunk, clen, n = [], 0, 0
+            for p in unsent:
+                chunk.append(p); clen += len(p); n += 1
+                if clen >= MIN_CHUNK:
+                    txt = " ".join(chunk)
+                    if not _speakable(txt) or _send({"op": "speak_stream", "text": txt}):
+                        sent += n
+                    chunk, clen, n = [], 0, 0
+            # Sobrante: solo se manda si el mensaje ya terminó.
+            if final and chunk:
+                txt = " ".join(chunk)
+                if not _speakable(txt) or _send({"op": "speak_stream", "text": txt}):
+                    sent += n
 
-    state["spoken"] = spoken
+    state["sent"] = sent
     try:
         with open(STATE_PATH, "w") as f:
             json.dump(state, f)
