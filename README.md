@@ -1,120 +1,126 @@
-# FeengSpeak
+# FeengSpeak 🎙️
 
-Herramienta interna de Feengster que le da **voz a Claude Code**: lee en voz alta
-las respuestas del asistente, en español, **100% local** — sin claves de API, sin
-nube, sin enviar tu código a ningún servicio.
+**Give Claude Code a voice.** FeengSpeak reads Claude Code's responses out loud, in
+real time, as they stream — fully local, no API keys, nothing leaves your machine.
 
-## Overview
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Local](https://img.shields.io/badge/runs-100%25%20local-success)
+![Engine: Kokoro ONNX](https://img.shields.io/badge/engine-Kokoro%20ONNX-orange)
 
-FeengSpeak es una utilidad de **developer experience (DX)**: una herramienta de
-línea de comandos + daemon que se engancha a Claude Code mediante un hook `Stop`.
-Cada vez que Claude termina de responder, FeengSpeak sintetiza la respuesta y la
-reproduce. No es un producto de cara al cliente; es tooling interno del equipo.
+> Text-to-speech (TTS) voice mode for [Claude Code](https://claude.com/claude-code).
+> Hear the agent talk back while you code — hands-free, bilingual, offline.
 
-- **Motor:** [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) (Kokoro 82M
-  vía ONNX Runtime — sin PyTorch, corre en CPU).
-- **Bilingüe (auto):** detecta el idioma de cada bloque y lo lee con la voz correcta
-  — español con `em_alex`, inglés US con `am_michael`. Los términos técnicos en
-  inglés dentro del español se pronuncian en inglés.
-- **Lectura en vivo:** lee mientras Claude escribe (hook `MessageDisplay`), oración
-  por oración, no al terminar.
-- **Para dev:** lee todo lo que el agente comunica (código inline, rutas, comandos);
-  solo omite bloques de código largos.
-- **Latencia:** el daemon carga el modelo una vez (~2s); luego TTFA ~0.7s con un
-  pipeline de dos etapas (sintetiza la oración siguiente mientras suena la actual).
-- **Privacidad:** todo local. Nada sale de la máquina.
+---
 
-## Configuración
+## Why
 
-`~/.config/feengspeak/config.json` (estado de usuario, fuera del repo):
+Claude Code talks to you in text. FeengSpeak adds the missing half: it **speaks the
+responses aloud** so you can keep your eyes on what matters, multitask, or just rest
+them. It hooks into Claude Code and starts reading **while** the response is still
+being generated — you don't wait for it to finish.
 
-| Clave | Default | Qué hace |
-|-------|---------|----------|
-| `voice` | `em_alex` | Voz española (`ef_dora`, `em_alex`, `em_santa`). |
-| `voice_en` | `am_michael` | Voz inglesa US (`am_michael`, `am_adam`, `am_onyx`, `af_heart`, `af_nova`). |
-| `auto_lang` | `true` | Auto-detecta es/en por bloque. |
-| `english_terms` | `true` | Pronuncia términos de `EN_TERMS` en inglés dentro del español. |
-| `speed` | `0.93` | Velocidad de voz (más bajo = más pausado). |
-| `stream_mode` | — | Lectura en vivo (`feengspeak stream on|off`). |
-| `enabled` | `true` | On/off global (`feengspeak on|off`). |
+Built for developers: it reads the things you actually need — inline code, file paths,
+commands — and only skips long code blocks.
 
-Tras cambiar la config o el código: `feengspeak daemon-stop` (el daemon revive solo
-y relee la config).
+## Features
 
-Fork interno de [`claude-voice`](https://github.com/Null-Phnix/claude-voice)
-(MIT, © 2026 Null-Phnix). Ver [`NOTICE`](./NOTICE) y [`LICENSE`](./LICENSE).
+- 🌎 **Bilingual, automatic** — detects the language of each response and reads
+  Spanish with a Spanish voice and English with a US voice. No toggles. The language
+  is locked per response, so the voice never flips mid-message.
+- ⚡ **Live streaming** — reads sentence by sentence *as Claude types*, via the
+  `MessageDisplay` hook, not after the response completes.
+- 🔤 **English technical terms in English** — words like `commit`, `deploy`,
+  `daemon`, `branch` are pronounced in English even inside Spanish prose (mixed-language
+  phonemization). Editable term list.
+- 👨‍💻 **Dev-friendly** — reads inline code, paths and commands in full; only long
+  fenced code blocks are summarized as "code block".
+- 🚀 **Fast & local** — [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) via
+  ONNX Runtime (no PyTorch, runs on CPU). A background daemon keeps the model warm;
+  time-to-first-audio is ~0.7s thanks to a two-stage streaming pipeline.
+- 🔒 **Private** — 100% offline after the one-time model download. No cloud, no API
+  keys, no telemetry.
 
-## Estructura
+## How it works
 
-```
-FeengSpeak/
-├── feengspeak.py        # Todo el tool: CLI, daemon, hooks, síntesis, render
-├── install.sh           # Crea venv, instala deps, descarga modelos (idempotente)
-├── requirements.txt     # Dependencias Python
-├── models/              # Modelos Kokoro (gitignored, los baja install.sh)
-├── venv/                # Entorno virtual (gitignored)
-├── LICENSE  · NOTICE    # MIT + atribución del upstream
-└── CLAUDE.md            # Estándares de desarrollo
-```
+1. Claude Code streams a response. The `MessageDisplay` hook feeds the text to a
+   lightweight handler (`stream_hook.py`) in deltas.
+2. The handler accumulates text, detects complete sentences, strips markdown (keeping
+   inline code/paths/commands), and groups them into chunks.
+3. Chunks go over a Unix socket to a daemon that synthesizes and plays them **in
+   order, without gaps** — the next sentence is synthesized while the current one plays.
+4. A new prompt interrupts the previous reading. A `Stop` hook is the fallback when
+   live streaming is off.
 
-Config en `~/.config/feengspeak/config.json` · runtime/daemon en `~/.cache/feengspeak/`.
+## Requirements
 
-## Instalación
+- **Python 3.11+**
+- Linux with ALSA (`aplay`) for playback
+- *(optional)* `libportaudio2` for `sounddevice` playback + karaoke word-highlighting:
+  `sudo apt install -y libportaudio2`
 
-```bash
-./install.sh
-venv/bin/python feengspeak.py setup     # instala los hooks Stop + UserPromptSubmit
-# Reinicia Claude Code para que los hooks tomen efecto.
-```
+The TTS engine and its phonemizer (espeak-ng) are installed via pip — no other system
+packages required.
 
-Opcional, para el resaltado karaoke palabra-por-palabra en la terminal:
+## Install
 
 ```bash
-sudo apt install -y libportaudio2
+git clone https://github.com/JuanLalo/FeengSpeak
+cd FeengSpeak
+./install.sh                          # venv + deps + Kokoro models (~340 MB, once)
+venv/bin/python feengspeak.py setup   # installs the Claude Code hooks
+feengspeak stream on                  # enable live (streaming) reading
+# Restart Claude Code for the hooks to take effect.
 ```
 
-Sin `libportaudio2` funciona igual (reproduce vía `aplay`), solo sin el efecto visual.
+`install.sh` is idempotent. Models and the venv are gitignored — a fresh clone
+recreates them.
 
-## Uso
+## Usage
 
 ```bash
-feengspeak demo            # demo de voz
-feengspeak on | off        # activa / desactiva la lectura
-feengspeak --voices        # lista las voces
-feengspeak daemon-status   # estado del daemon
-feengspeak daemon-stop     # detiene el daemon
-feengspeak --voice em_alex "texto a leer"
+feengspeak demo            # play a voice demo
+feengspeak on | off        # enable / disable reading
+feengspeak stream on | off # live reading while Claude types, vs reading on completion
+feengspeak --voices        # list voices
+feengspeak daemon-status   # daemon state
+feengspeak daemon-stop     # stop the daemon (it revives on next read, reloading config)
+feengspeak --voice am_onyx "any text to read"
 ```
 
-## Modo streaming (experimental)
+## Configuration
 
-Por defecto FeengSpeak lee la respuesta **al terminar** (hook `Stop`). El modo
-streaming la lee **mientras Claude escribe**, oración por oración, usando el hook
-`MessageDisplay` (que entrega el texto en deltas durante el render).
+`~/.config/feengspeak/config.json` (per-user, outside the repo):
 
-```bash
-feengspeak stream on     # lee en vivo mientras se genera la respuesta
-feengspeak stream off    # vuelve a leer al terminar (modo normal)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `voice` | `em_alex` | Spanish voice (`ef_dora`, `em_alex`, `em_santa`). |
+| `voice_en` | `am_michael` | US English voice (`am_michael`, `am_adam`, `am_onyx`, `af_heart`, `af_nova`). |
+| `auto_lang` | `true` | Auto-detect Spanish vs English per response. |
+| `english_terms` | `true` | Pronounce `EN_TERMS` words in English inside Spanish. |
+| `speed` | `0.93` | Speech rate (lower = slower / calmer). |
+| `stream_mode` | `false` | Live reading while typing (`feengspeak stream on`). |
+| `enabled` | `true` | Global on/off (`feengspeak on/off`). |
+
+After changing config or code: `feengspeak daemon-stop` (the daemon revives and reloads).
+
+## Project layout
+
+```
+feengspeak.py     # CLI + daemon + synthesis + language detection
+stream_hook.py    # MessageDisplay hook: live, stdlib-only, non-blocking
+install.sh        # reproducible setup
+requirements.txt
 ```
 
-Requiere haber corrido `feengspeak setup` (registra el hook `MessageDisplay`) y
-reiniciar Claude Code. Con `stream on`, el hook `Stop` se vuelve no-op para no
-leer dos veces; el daemon encola las oraciones y las reproduce en orden sin
-interrumpirse entre sí. Un prompt nuevo corta la lectura anterior.
+## Credits & License
 
-## Cómo funciona
+FeengSpeak is a fork of [`claude-voice`](https://github.com/Null-Phnix/claude-voice)
+by Null-Phnix (MIT), re-engineered for a Spanish-first, bilingual workflow: ONNX
+backend (no PyTorch), Spanish + English voices, mixed-language pronunciation,
+transcript-based extraction, and per-message language locking. See [`NOTICE`](./NOTICE).
 
-1. Claude Code dispara el hook `Stop` al terminar una respuesta.
-2. FeengSpeak lee el `transcript_path` del payload, espera a que se escriba, y
-   une **todos los bloques de texto** del asistente desde el último prompt real
-   del usuario (ignora los `tool_result`).
-3. Salta respuestas mayormente-código, limpia markdown, aplica el diccionario de
-   pronunciación, y manda el texto al daemon por socket Unix.
-4. El daemon sintetiza con Kokoro y reproduce por streaming; una respuesta nueva
-   interrumpe la anterior.
+Voices and engine: [Kokoro](https://github.com/hexgrad/kokoro) /
+[kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx).
 
-## Requisitos
-
-- Python 3.11+
-- `libespeak-ng1` (fonemización; suele venir con speech-dispatcher en Ubuntu)
-- `aplay` (ALSA) para reproducción; `libportaudio2` opcional para karaoke
+Licensed under the [MIT License](./LICENSE).
