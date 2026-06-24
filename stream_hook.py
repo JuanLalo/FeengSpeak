@@ -26,8 +26,10 @@ STATE_PATH = os.path.join(RUNTIME_DIR, "stream_state.json")
 LOCK_PATH = os.path.join(RUNTIME_DIR, "stream.lock")
 
 _LETTER = re.compile(r"[A-Za-zÁÉÍÓÚÜáéíóúüÑñ]")
-_SENT_SPLIT = re.compile(r"(?<=[.!?:])\s+")
-_ENDS_TERM = re.compile(r"[.!?:]\s*$")
+# Partir solo en fin de oración real (.!?), NO en ':' — así no se cortan
+# encabezados ni frases con dos puntos, evitando huecos innecesarios.
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_ENDS_TERM = re.compile(r"[.!?]\s*$")
 
 
 def _stream_on():

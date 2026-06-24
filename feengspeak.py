@@ -133,9 +133,12 @@ _active_tty = None
 _active_tty_t = 0.0
 _muted_ttys = set()
 
-# Modo streaming: cola FIFO de oraciones que el daemon reproduce EN ORDEN
-# (sin preempción entre ellas), alimentada por el hook MessageDisplay.
+# Modo streaming: pipeline de dos etapas alimentado por el hook MessageDisplay.
+# _stream_q = texto entrante; _play_q = audio ya sintetizado listo para sonar.
+# Separar síntesis de reproducción evita el hueco: la oración siguiente se
+# sintetiza MIENTRAS suena la actual (sin pausa larga en cada punto).
 _stream_q = queue.Queue()
+_play_q = queue.Queue(maxsize=4)
 
 # Voces en español de Kokoro.
 VOICE_LIST = {
@@ -644,10 +647,9 @@ def _ensure_daemon(wait_seconds=DAEMON_SPAWN_WAIT):
     return False
 
 
-def _stream_worker():
-    """Consume oraciones de _stream_q y las reproduce en orden, una tras otra.
-    A diferencia del op `speak` (que preempta), aquí NO se interrumpe entre
-    oraciones: así una respuesta se lee fluida a medida que llega por streaming."""
+def _stream_synth_worker():
+    """Etapa 1: sintetiza el texto entrante y deja el audio listo en _play_q.
+    Corre ADELANTADO de la reproducción, así no hay hueco entre oraciones."""
     while True:
         item = _stream_q.get()
         if item is None:
@@ -656,8 +658,20 @@ def _stream_worker():
         try:
             k = get_pipe()
             samples, _sr = k.create(fix_pronunciation(text), voice=voice, speed=1.0, lang=LANG)
+            _play_q.put(np.asarray(samples, dtype=np.float32))
+        except Exception as e:
+            _daemon_log(f"stream synth error: {e}")
+
+
+def _stream_play_worker():
+    """Etapa 2: reproduce en orden el audio ya sintetizado, sin preempción."""
+    while True:
+        audio = _play_q.get()
+        if audio is None:
+            continue
+        try:
             with _playback_lock:
-                _play_blocking(np.asarray(samples, dtype=np.float32))
+                _play_blocking(audio)
         except Exception as e:
             _daemon_log(f"stream playback error: {e}")
 
@@ -722,12 +736,13 @@ def _handle_client(conn):
             conn.sendall(json.dumps({"queued": True}).encode() + b"\n"); return
 
         if op == "reset_stream":
-            # Nuevo turno: vacía la cola y corta lo que esté sonando.
-            try:
-                while True:
-                    _stream_q.get_nowait()
-            except queue.Empty:
-                pass
+            # Nuevo turno: vacía ambas colas y corta lo que esté sonando.
+            for q in (_stream_q, _play_q):
+                try:
+                    while True:
+                        q.get_nowait()
+                except queue.Empty:
+                    pass
             _stop_playback()
             conn.sendall(json.dumps({"ok": True}).encode() + b"\n"); return
 
@@ -791,8 +806,9 @@ def cmd_daemon():
     get_pipe()
     _daemon_log(f"kokoro loaded in {time.monotonic()-t0:.2f}s")
 
-    # Worker que reproduce en orden las oraciones del modo streaming.
-    threading.Thread(target=_stream_worker, daemon=True).start()
+    # Pipeline de streaming: síntesis adelantada + reproducción en orden.
+    threading.Thread(target=_stream_synth_worker, daemon=True).start()
+    threading.Thread(target=_stream_play_worker, daemon=True).start()
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(SOCK_PATH)
