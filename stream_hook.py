@@ -79,6 +79,14 @@ def _send(payload, timeout=0.8):
         return False
 
 
+def _inline_code(m):
+    """Código inline: conserva el texto si es un término/identificador simple
+    (p.ej. commit, em_alex, kokoro-onnx) para que SÍ se lea; descarta si es
+    ruido (rutas, comandos con espacios o símbolos)."""
+    inner = m.group(1)
+    return f" {inner} " if re.fullmatch(r"[\w.+\-]{1,40}", inner) else " "
+
+
 def _clean_stream(raw):
     """Limpia para voz, conservando estado de bloque de código: si hay un fence
     sin cerrar, retiene desde ahí (no lee código a medio escribir)."""
@@ -86,7 +94,7 @@ def _clean_stream(raw):
     i = s.find("```")
     if i != -1:
         s = s[:i]                              # fence abierto: retén el resto
-    s = re.sub(r"`[^`]*`", " ", s)
+    s = re.sub(r"`([^`]+)`", _inline_code, s)
     s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
     s = re.sub(r"https?://\S+", " ", s)
     s = re.sub(r"^\s*\d+\.\s+", "", s, flags=re.M)

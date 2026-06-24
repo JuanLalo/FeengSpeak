@@ -323,9 +323,16 @@ def is_mostly_code(text):
     return len(text) > 0 and (code_chars / len(text)) > 0.5
 
 
+def _inline_code(m):
+    """Código inline: conserva el texto si es un término/identificador simple
+    (commit, em_alex, kokoro-onnx) para que se lea; descarta rutas/comandos."""
+    inner = m.group(1)
+    return f' {inner} ' if re.fullmatch(r'[\w.+\-]{1,40}', inner) else ' '
+
+
 def clean_for_speech(text):
     text = re.sub(r'```[\s\S]*?```', '', text)
-    text = re.sub(r'`[^`]+`', '', text)
+    text = re.sub(r'`([^`]+)`', _inline_code, text)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'[*_#>|]', '', text)
