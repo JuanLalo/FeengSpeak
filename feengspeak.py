@@ -239,7 +239,7 @@ def load_config():
         "voice": DEFAULT_VOICE, "min_chars": MIN_CHARS, "max_chars": MAX_CHARS,
         "window": WINDOW, "chime": CHIME_ENABLED, "done_pause": DONE_PAUSE,
         "enabled": True, "use_daemon": True,
-        "english_terms": True, "speed": 1.0,
+        "english_terms": True, "speed": 0.93,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -354,21 +354,17 @@ def fix_pronunciation(text):
 # Editable: agrega/quita palabras. La detección es por palabra completa, sin
 # distinguir mayúsculas. Si una palabra NO está aquí, se lee en español.
 EN_TERMS = {
+    # Nombres propios / productos (siempre en inglés)
     "claude", "anthropic", "feengspeak", "kokoro", "piper", "github", "git",
     "onnx", "python", "warp", "linux", "ubuntu", "docker", "kubernetes",
+    # Jerga git / devops fuertemente anglo
     "commit", "commits", "deploy", "deployment", "branch", "branches", "merge",
-    "push", "pull", "request", "rebase", "checkout", "clone", "fork", "release",
-    "rollback", "pipeline", "build", "debug", "bug", "bugs", "hook", "hooks",
-    "frontend", "backend", "fullstack", "framework", "library", "package",
-    "repo", "repository", "endpoint", "server", "client", "token", "cache",
-    "queue", "thread", "daemon", "stream", "streaming", "prompt", "default",
-    "setup", "update", "upgrade", "install", "log", "logs", "output", "input",
-    "script", "string", "array", "object", "function", "callback", "async",
-    "await", "timeout", "socket", "buffer", "payload", "schema", "query",
-    "database", "backup", "file", "path", "link", "feature", "test", "testing",
-    "review", "staging", "production", "dev", "prod", "frontend", "backend",
-    "loop", "config", "settings", "workflow", "runtime", "release", "voice",
-    "model", "node", "render", "delta", "deploy", "agent", "tooling",
+    "push", "pull", "request", "rebase", "checkout", "clone", "fork", "rollback",
+    "pipeline", "repo", "repository", "release", "staging",
+    # Jerga de desarrollo que se dice en inglés
+    "hook", "hooks", "bug", "bugs", "debug", "frontend", "backend", "framework",
+    "endpoint", "daemon", "stream", "streaming", "prompt", "token", "runtime",
+    "backend", "fullstack",
 }
 _TOKEN_RE = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+|\d+|[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\d]+")
 
