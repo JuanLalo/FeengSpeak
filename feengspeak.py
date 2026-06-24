@@ -239,6 +239,7 @@ def load_config():
         "voice": DEFAULT_VOICE, "min_chars": MIN_CHARS, "max_chars": MAX_CHARS,
         "window": WINDOW, "chime": CHIME_ENABLED, "done_pause": DONE_PAUSE,
         "enabled": True, "use_daemon": True,
+        "english_terms": True, "speed": 1.0,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -349,6 +350,73 @@ def fix_pronunciation(text):
     return text
 
 
+# Términos técnicos en inglés que se pronuncian EN INGLÉS (fonemización en-us).
+# Editable: agrega/quita palabras. La detección es por palabra completa, sin
+# distinguir mayúsculas. Si una palabra NO está aquí, se lee en español.
+EN_TERMS = {
+    "claude", "anthropic", "feengspeak", "kokoro", "piper", "github", "git",
+    "onnx", "python", "warp", "linux", "ubuntu", "docker", "kubernetes",
+    "commit", "commits", "deploy", "deployment", "branch", "branches", "merge",
+    "push", "pull", "request", "rebase", "checkout", "clone", "fork", "release",
+    "rollback", "pipeline", "build", "debug", "bug", "bugs", "hook", "hooks",
+    "frontend", "backend", "fullstack", "framework", "library", "package",
+    "repo", "repository", "endpoint", "server", "client", "token", "cache",
+    "queue", "thread", "daemon", "stream", "streaming", "prompt", "default",
+    "setup", "update", "upgrade", "install", "log", "logs", "output", "input",
+    "script", "string", "array", "object", "function", "callback", "async",
+    "await", "timeout", "socket", "buffer", "payload", "schema", "query",
+    "database", "backup", "file", "path", "link", "feature", "test", "testing",
+    "review", "staging", "production", "dev", "prod", "frontend", "backend",
+    "loop", "config", "settings", "workflow", "runtime", "release", "voice",
+    "model", "node", "render", "delta", "deploy", "agent", "tooling",
+}
+_TOKEN_RE = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+|\d+|[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\d]+")
+
+
+def _phonemes_for(text):
+    """Fonemas mezclando inglés (términos de EN_TERMS) y español (el resto),
+    para que las palabras técnicas suenen en inglés dentro de la frase."""
+    k = get_pipe()
+    out, es_buf = [], []
+
+    def flush_es():
+        if es_buf:
+            seg = "".join(es_buf)
+            if seg.strip():
+                p = k.tokenizer.phonemize(seg, "es")
+                if p:
+                    out.append(p)
+            es_buf.clear()
+
+    for tok in _TOKEN_RE.findall(text):
+        if tok.isalpha() and tok.lower() in EN_TERMS:
+            flush_es()
+            p = k.tokenizer.phonemize(tok, "en-us")
+            if p:
+                out.append(p)
+        else:
+            es_buf.append(tok)
+    flush_es()
+    return " ".join(out)
+
+
+def _synthesize(text, voice):
+    """Sintetiza una oración. Con `english_terms` (default), pronuncia los
+    términos técnicos en inglés vía fonemas mixtos; si no, usa el diccionario
+    de pronunciación en español. `speed` ajusta la velocidad (naturalidad)."""
+    k = get_pipe()
+    cfg = load_config()
+    speed = float(cfg.get("speed", 1.0))
+    if cfg.get("english_terms", True):
+        try:
+            phon = _phonemes_for(text)
+            if phon.strip():
+                return k.create(phon, voice=voice, speed=speed, is_phonemes=True)
+        except Exception as e:
+            _daemon_log(f"mixed phonemes fallback: {e}")
+    return k.create(fix_pronunciation(text), voice=voice, speed=speed, lang=LANG)
+
+
 def split_sentences(text):
     parts = re.split(r'(?<=[.!?])\s+', text.strip())
     return [p.strip() for p in parts if p.strip()]
@@ -454,12 +522,11 @@ def _play_blocking(full_audio):
 def _synth_producer(sentences, voice, audio_q):
     """Hilo productor: sintetiza cada oración y la encola con su índice.
     El maxsize de la cola da backpressure (sintetiza ~adelante, no todo de golpe)."""
-    k = get_pipe()
     for i, s in enumerate(sentences):
         if _interrupted:
             break
         try:
-            samples, _sr = k.create(s, voice=voice, speed=1.0, lang=LANG)
+            samples, _sr = _synthesize(s, voice)
             audio_q.put((i, np.asarray(samples, dtype=np.float32)))
         except Exception:
             continue
@@ -475,7 +542,7 @@ def speak_and_highlight(text, voice, show_stats=False, tty_path="/dev/tty"):
     _interrupted = False
     t0 = time.monotonic()
 
-    synth_sentences = split_sentences(fix_pronunciation(text))
+    synth_sentences = split_sentences(text)  # crudo: _synthesize maneja pronunciación
     display_sentences = split_sentences(text)
     all_words = text.split()
     total_words = len(all_words)
@@ -656,8 +723,7 @@ def _stream_synth_worker():
             continue
         text, voice = item
         try:
-            k = get_pipe()
-            samples, _sr = k.create(fix_pronunciation(text), voice=voice, speed=1.0, lang=LANG)
+            samples, _sr = _synthesize(text, voice)
             _play_q.put(np.asarray(samples, dtype=np.float32))
         except Exception as e:
             _daemon_log(f"stream synth error: {e}")
