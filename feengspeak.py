@@ -61,7 +61,8 @@ VENV_PYTHON = os.path.join(BASE_DIR, "venv", "bin", "python")
 
 # ── defaults ──
 DEFAULT_VOICE = "ef_dora"          # voz española por defecto
-LANG = "es"                        # idioma Kokoro
+DEFAULT_VOICE_EN = "am_michael"    # voz inglesa US por defecto (auto-detección)
+LANG = "es"                        # idioma Kokoro primario
 SAMPLE_RATE = 24000
 WINDOW = 8
 MIN_CHARS = 30
@@ -145,6 +146,11 @@ VOICE_LIST = {
     "ef_dora": "Español, femenina, cálida",
     "em_alex": "Español, masculina, natural",
     "em_santa": "Español, masculina, grave",
+    "am_michael": "Inglés US, masculina, natural",
+    "am_adam": "Inglés US, masculina",
+    "am_onyx": "Inglés US, masculina, profunda",
+    "af_heart": "Inglés US, femenina, cálida",
+    "af_nova": "Inglés US, femenina, clara",
 }
 
 DEMO_TEXT = (
@@ -240,6 +246,7 @@ def load_config():
         "window": WINDOW, "chime": CHIME_ENABLED, "done_pause": DONE_PAUSE,
         "enabled": True, "use_daemon": True,
         "english_terms": True, "speed": 0.93,
+        "auto_lang": True, "voice_en": DEFAULT_VOICE_EN,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -402,21 +409,52 @@ def _phonemes_for(text):
     return " ".join(out)
 
 
+# Pistas léxicas para auto-detección de idioma (palabras comunes muy frecuentes).
+_ES_HINT = {"el", "la", "los", "las", "un", "una", "de", "que", "y", "en", "por",
+            "con", "para", "se", "no", "es", "está", "más", "cómo", "qué", "pero",
+            "este", "esta", "su", "al", "del", "lo", "le", "ya", "como", "hay", "fue"}
+_EN_HINT = {"the", "is", "are", "and", "to", "of", "in", "that", "it", "for",
+            "with", "you", "this", "be", "on", "not", "we", "your", "can", "will",
+            "here", "i", "have", "do", "was", "but", "they", "from", "at"}
+_WORD_RE = re.compile(r"[a-záéíóúñü]+", re.IGNORECASE)
+
+
+def _detect_lang(text):
+    """Heurística ligera es vs en-us: diacríticos/signos solo-español + conteo
+    de palabras funcionales comunes. Empate → español (idioma primario)."""
+    es = 2 if re.search(r"[áéíóúñ¿¡]", text, re.IGNORECASE) else 0
+    en = 0
+    for w in _WORD_RE.findall(text.lower()):
+        if w in _ES_HINT:
+            es += 1
+        elif w in _EN_HINT:
+            en += 1
+    return "en-us" if en > es else "es"
+
+
 def _synthesize(text, voice):
-    """Sintetiza una oración. Con `english_terms` (default), pronuncia los
-    términos técnicos en inglés vía fonemas mixtos; si no, usa el diccionario
-    de pronunciación en español. `speed` ajusta la velocidad (naturalidad)."""
+    """Sintetiza una oración. Si `auto_lang`, detecta el idioma: inglés se lee
+    con voz US (`voice_en`); español con `voice` y, si `english_terms`, los
+    términos técnicos en inglés vía fonemas mixtos. `speed` ajusta naturalidad."""
     k = get_pipe()
     cfg = load_config()
     speed = float(cfg.get("speed", 1.0))
+    lang = _detect_lang(text) if cfg.get("auto_lang", True) else cfg.get("lang", LANG)
+
+    if lang == "en-us":
+        v = cfg.get("voice_en", DEFAULT_VOICE_EN)
+        return k.create(text, voice=v, speed=speed, lang="en-us")
+
+    # Español (voz `voice`), con términos técnicos en inglés mezclados.
+    v = voice or cfg.get("voice", DEFAULT_VOICE)
     if cfg.get("english_terms", True):
         try:
             phon = _phonemes_for(text)
             if phon.strip():
-                return k.create(phon, voice=voice, speed=speed, is_phonemes=True)
+                return k.create(phon, voice=v, speed=speed, is_phonemes=True)
         except Exception as e:
             _daemon_log(f"mixed phonemes fallback: {e}")
-    return k.create(fix_pronunciation(text), voice=voice, speed=speed, lang=LANG)
+    return k.create(fix_pronunciation(text), voice=v, speed=speed, lang=LANG)
 
 
 def split_sentences(text):
