@@ -31,6 +31,27 @@ _LETTER = re.compile(r"[A-Za-zÁÉÍÓÚÜáéíóúüÑñ]")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _ENDS_TERM = re.compile(r"[.!?]\s*$")
 
+# Detección de idioma (sesgada a español): debe coincidir con feengspeak._detect_lang.
+_ES_HINT = {"el", "la", "los", "las", "un", "una", "de", "que", "y", "en", "por",
+            "con", "para", "se", "no", "es", "está", "más", "cómo", "qué", "pero",
+            "este", "esta", "su", "al", "del", "lo", "le", "ya", "como", "hay", "fue"}
+_EN_HINT = {"the", "is", "are", "and", "to", "of", "in", "that", "it", "for",
+            "with", "you", "this", "be", "on", "not", "we", "your", "can", "will",
+            "here", "i", "have", "do", "was", "but", "they", "from", "at"}
+_WORD_RE = re.compile(r"[a-záéíóúñü]+", re.IGNORECASE)
+
+
+def _detect_lang(text):
+    """es vs en-us, sesgado a español: inglés solo si la señal es clara."""
+    es = 2 if re.search(r"[áéíóúñ¿¡]", text, re.IGNORECASE) else 0
+    en = 0
+    for w in _WORD_RE.findall(text.lower()):
+        if w in _ES_HINT:
+            es += 1
+        elif w in _EN_HINT:
+            en += 1
+    return "en-us" if (en >= 2 and en > es + 1) else "es"
+
 
 def _stream_on():
     try:
@@ -145,12 +166,13 @@ def main():
     if state.get("turn_id") != tid:
         if _daemon_alive():
             _send({"op": "reset_stream"})
-        state = {"turn_id": tid, "message_id": None, "raw": "", "sent": 0}
+        state = {"turn_id": tid, "message_id": None, "raw": "", "sent": 0, "lang": None}
     # Nuevo mensaje dentro del turno → reinicia buffer (sin cortar audio).
     if state.get("message_id") != mid:
         state["message_id"] = mid
         state["raw"] = ""
         state["sent"] = 0
+        state["lang"] = None
 
     state["raw"] += delta
     cleaned = _clean_stream(state["raw"])
@@ -171,19 +193,26 @@ def main():
             # Pre-calienta sin bloquear el render; se reintenta al siguiente delta.
             _spawn_daemon()
         else:
+            # Fija el idioma UNA vez por mensaje (desde todo el texto acumulado),
+            # así no salta entre español e inglés a media respuesta.
+            if not state.get("lang"):
+                state["lang"] = _detect_lang(cleaned)
+            lang = state["lang"]
+
+            def emit(txt):
+                return (not _speakable(txt)
+                        or _send({"op": "speak_stream", "text": txt, "lang": lang}))
+
             chunk, clen, n = [], 0, 0
             for p in unsent:
                 chunk.append(p); clen += len(p); n += 1
                 if clen >= MIN_CHUNK:
-                    txt = " ".join(chunk)
-                    if not _speakable(txt) or _send({"op": "speak_stream", "text": txt}):
+                    if emit(" ".join(chunk)):
                         sent += n
                     chunk, clen, n = [], 0, 0
             # Sobrante: solo se manda si el mensaje ya terminó.
-            if final and chunk:
-                txt = " ".join(chunk)
-                if not _speakable(txt) or _send({"op": "speak_stream", "text": txt}):
-                    sent += n
+            if final and chunk and emit(" ".join(chunk)):
+                sent += n
 
     state["sent"] = sent
     try:

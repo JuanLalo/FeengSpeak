@@ -420,8 +420,10 @@ _WORD_RE = re.compile(r"[a-záéíóúñü]+", re.IGNORECASE)
 
 
 def _detect_lang(text):
-    """Heurística ligera es vs en-us: diacríticos/signos solo-español + conteo
-    de palabras funcionales comunes. Empate → español (idioma primario)."""
+    """Heurística ligera es vs en-us, SESGADA a español (idioma primario): solo
+    devuelve inglés si la señal inglesa es clara (≥2 palabras funcionales EN y
+    supera al español por más de 1). Diacríticos/signos cuentan fuerte para es.
+    Así una respuesta en español no se confunde con inglés por unos términos."""
     es = 2 if re.search(r"[áéíóúñ¿¡]", text, re.IGNORECASE) else 0
     en = 0
     for w in _WORD_RE.findall(text.lower()):
@@ -429,17 +431,18 @@ def _detect_lang(text):
             es += 1
         elif w in _EN_HINT:
             en += 1
-    return "en-us" if en > es else "es"
+    return "en-us" if (en >= 2 and en > es + 1) else "es"
 
 
-def _synthesize(text, voice):
-    """Sintetiza una oración. Si `auto_lang`, detecta el idioma: inglés se lee
-    con voz US (`voice_en`); español con `voice` y, si `english_terms`, los
-    términos técnicos en inglés vía fonemas mixtos. `speed` ajusta naturalidad."""
+def _synthesize(text, voice, lang=None):
+    """Sintetiza una oración. `lang` fija el idioma (lo pasa el hook de streaming,
+    ya bloqueado por mensaje); si es None y `auto_lang`, se detecta. Inglés → voz
+    US (`voice_en`); español → `voice` con términos técnicos en inglés mezclados."""
     k = get_pipe()
     cfg = load_config()
     speed = float(cfg.get("speed", 1.0))
-    lang = _detect_lang(text) if cfg.get("auto_lang", True) else cfg.get("lang", LANG)
+    if lang is None:
+        lang = _detect_lang(text) if cfg.get("auto_lang", True) else cfg.get("lang", LANG)
 
     if lang == "en-us":
         v = cfg.get("voice_en", DEFAULT_VOICE_EN)
@@ -761,9 +764,9 @@ def _stream_synth_worker():
         item = _stream_q.get()
         if item is None:
             continue
-        text, voice = item
+        text, voice, lang = item
         try:
-            samples, _sr = _synthesize(text, voice)
+            samples, _sr = _synthesize(text, voice, lang)
             _play_q.put(np.asarray(samples, dtype=np.float32))
         except Exception as e:
             _daemon_log(f"stream synth error: {e}")
@@ -837,8 +840,9 @@ def _handle_client(conn):
             # Encola una oración para lectura en streaming (no preempta).
             stext = (req.get("text") or "").strip()
             svoice = req.get("voice") or load_config().get("voice", DEFAULT_VOICE)
+            slang = req.get("lang")  # idioma fijado por el hook (None = auto)
             if stext:
-                _stream_q.put((stext, svoice))
+                _stream_q.put((stext, svoice, slang))
             conn.sendall(json.dumps({"queued": True}).encode() + b"\n"); return
 
         if op == "reset_stream":
