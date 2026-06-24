@@ -426,22 +426,6 @@ def mini_bar(current, total, width=20):
 
 
 # ── síntesis ──
-def generate_audio(text, voice):
-    """Genera audio por oración con kokoro-onnx. Devuelve (lista_audio, gen_time)."""
-    k = get_pipe()
-    speech_text = fix_pronunciation(text)
-    sentences = split_sentences(speech_text)
-    t0 = time.monotonic()
-    sentence_audio = []
-    for sentence in sentences:
-        try:
-            samples, _sr = k.create(sentence, voice=voice, speed=1.0, lang=LANG)
-            sentence_audio.append(np.asarray(samples, dtype=np.float32))
-        except Exception:
-            sentence_audio.append(None)
-    return sentence_audio, time.monotonic() - t0
-
-
 def _play_blocking(full_audio):
     """Reproduce audio completo. Con sounddevice usa sd; si no, aplay."""
     global _aplay_proc
@@ -460,54 +444,19 @@ def _play_blocking(full_audio):
     _aplay_proc.wait()
 
 
-def _speak_stream_aplay(text, voice, tty, t0, total_words, show_stats):
-    """Streaming por oración hacia aplay. Un hilo productor sintetiza adelante
-    mientras el consumidor reproduce; con RTF<1 la reproducción es continua y
-    el TTFA ≈ síntesis de la primera oración (~1s)."""
-    global _interrupted
+def _synth_producer(sentences, voice, audio_q):
+    """Hilo productor: sintetiza cada oración y la encola con su índice.
+    El maxsize de la cola da backpressure (sintetiza ~adelante, no todo de golpe)."""
     k = get_pipe()
-    sentences = split_sentences(fix_pronunciation(text))
-    audio_q = queue.Queue(maxsize=3)
-
-    def producer():
-        for s in sentences:
-            if _interrupted:
-                break
-            try:
-                samples, _sr = k.create(s, voice=voice, speed=1.0, lang=LANG)
-                audio_q.put(np.asarray(samples, dtype=np.float32))
-            except Exception:
-                continue
-        audio_q.put(None)
-
-    threading.Thread(target=producer, daemon=True).start()
-
-    try:
-        tty.write(f"  {LABEL}leyendo en voz alta{RESET}  {LABEL}|{RESET}  {LABEL}{voice}{RESET}\n")
-        tty.flush()
-    except (OSError, ValueError):
-        pass
-
-    ttfa = None
-    audio_total = 0.0
-    while not _interrupted:
-        audio = audio_q.get()
-        if audio is None:
+    for i, s in enumerate(sentences):
+        if _interrupted:
             break
-        if ttfa is None:
-            ttfa = time.monotonic() - t0
-        audio_total += len(audio) / SAMPLE_RATE
-        _play_blocking(audio)
-
-    stats = {"ttfa": ttfa or (time.monotonic() - t0), "gen_time": 0.0,
-             "audio_duration": audio_total, "total_time": time.monotonic() - t0,
-             "words": total_words, "chars": len(text), "voice": voice}
-    if not show_stats:
-        sys.stderr.write(f"feengspeak: ttfa={stats['ttfa']:.2f}s "
-                         f"total={stats['total_time']:.2f}s words={total_words} voice={voice}\n")
-    if tty is not sys.stderr:
-        tty.close()
-    return stats
+        try:
+            samples, _sr = k.create(s, voice=voice, speed=1.0, lang=LANG)
+            audio_q.put((i, np.asarray(samples, dtype=np.float32)))
+        except Exception:
+            continue
+    audio_q.put(None)
 
 
 def speak_and_highlight(text, voice, show_stats=False, tty_path="/dev/tty"):
@@ -519,89 +468,90 @@ def speak_and_highlight(text, voice, show_stats=False, tty_path="/dev/tty"):
     _interrupted = False
     t0 = time.monotonic()
 
+    synth_sentences = split_sentences(fix_pronunciation(text))
     display_sentences = split_sentences(text)
     all_words = text.split()
     total_words = len(all_words)
+    if not synth_sentences:
+        return {}
+
+    # Productor: sintetiza oración por oración en paralelo a la reproducción.
+    audio_q = queue.Queue(maxsize=3)
+    threading.Thread(target=_synth_producer,
+                     args=(synth_sentences, voice, audio_q), daemon=True).start()
 
     tty = get_tty(tty_path)
-
-    # ── camino streaming (sin sounddevice): sintetiza y reproduce oración por
-    # oración, así el audio empieza en ~1s aunque la respuesta sea larga ──
-    if not HAVE_SD:
-        return _speak_stream_aplay(text, voice, tty, t0, total_words, show_stats)
-
-    sentence_audio, gen_time = generate_audio(text, voice)
-    parts = [a for a in sentence_audio if a is not None]
-    if not parts:
-        if tty is not sys.stderr:
-            tty.close()
-        return {}
-    full_audio = np.concatenate(parts)
-    audio_duration = len(full_audio) / SAMPLE_RATE
-    ttfa = time.monotonic() - t0
-
-    # ── camino completo (sounddevice): karaoke sincronizado ──
-    word_boundaries, all_audio_parts, sample_offset = [], [], 0
-    for i, audio in enumerate(sentence_audio):
-        words = display_sentences[i].split() if i < len(display_sentences) else []
-        if audio is not None:
-            word_boundaries.append((words, sample_offset, sample_offset + len(audio)))
-            all_audio_parts.append(audio)
-            sample_offset += len(audio)
-        else:
-            word_boundaries.append((words, sample_offset, sample_offset))
-
-    global_timings = []
-    for words, start_sample, end_sample in word_boundaries:
-        seg_duration = (end_sample - start_sample) / SAMPLE_RATE
-        seg_start = start_sample / SAMPLE_RATE
-        for wstart, wend in estimate_word_timings(words, seg_duration):
-            global_timings.append((seg_start + wstart, seg_start + wend))
-
-    if chime:
-        play_chime_start()
-    listener = _start_keypress_listener(tty_path)
-
-    tty.write(HIDE_CURSOR)
-    header = f"  {LABEL}leyendo en voz alta{RESET}  {LABEL}|{RESET}  {LABEL}{voice}{RESET}  {DIM}(presiona una tecla para saltar){RESET}"
-    tty.write(f"{header}\n\n")
-    tty.flush()
-
-    playback_start = time.monotonic()
-    sd.play(full_audio, samplerate=SAMPLE_RATE)
-    for word_idx, (start, end) in enumerate(global_timings):
-        if _interrupted:
-            break
-        elapsed = time.monotonic() - playback_start
-        if elapsed < start:
-            time.sleep(start - elapsed)
-        if _interrupted:
-            break
-        karaoke = render_karaoke(all_words, word_idx, window)
-        bar = mini_bar(word_idx + 1, total_words)
-        tty.write(f"\033[1A\r\033[K  {karaoke}\n\r\033[K  {bar}")
-        tty.flush()
-
-    sd.stop()
-    _restore_terminal()
-    total_time = time.monotonic() - t0
-
-    if not _interrupted:
-        bar = mini_bar(total_words, total_words)
-        tty.write(f"\033[1A\r\033[K  {SPOKEN}listo{RESET}\n\r\033[K  {bar}")
-        tty.flush()
-        time.sleep(done_pause)
+    if HAVE_SD:
         if chime:
-            play_chime_end()
+            play_chime_start()
+        _start_keypress_listener(tty_path)
+        tty.write(HIDE_CURSOR)
+        header = f"  {LABEL}leyendo en voz alta{RESET}  {LABEL}|{RESET}  {LABEL}{voice}{RESET}  {DIM}(presiona una tecla para saltar){RESET}"
+        tty.write(f"{header}\n\n")
+        tty.flush()
+    else:
+        try:
+            tty.write(f"  {LABEL}leyendo en voz alta{RESET}  {LABEL}|{RESET}  {LABEL}{voice}{RESET}\n")
+            tty.flush()
+        except (OSError, ValueError):
+            pass
 
-    tty.write("\033[1A\r\033[K\033[1A\r\033[K\033[1A\r\033[K")
-    tty.write(SHOW_CURSOR)
-    tty.flush()
+    # Consumidor: reproduce cada oración en cuanto está lista. Con SD hace karaoke
+    # por oración (TTFA ≈ síntesis de la 1ª); sin SD reproduce por aplay.
+    ttfa = None
+    audio_total = 0.0
+    word_idx = 0
+    while not _interrupted:
+        item = audio_q.get()
+        if item is None:
+            break
+        idx, audio = item
+        if ttfa is None:
+            ttfa = time.monotonic() - t0
+        audio_total += len(audio) / SAMPLE_RATE
 
-    stats = {"ttfa": ttfa, "gen_time": gen_time, "audio_duration": audio_duration,
+        if not HAVE_SD:
+            _play_blocking(audio)
+            continue
+
+        words = display_sentences[idx].split() if idx < len(display_sentences) else []
+        timings = estimate_word_timings(words, len(audio) / SAMPLE_RATE)
+        seg_start = time.monotonic()
+        sd.play(audio, samplerate=SAMPLE_RATE)
+        for wstart, _wend in timings:
+            if _interrupted:
+                break
+            elapsed = time.monotonic() - seg_start
+            if elapsed < wstart:
+                time.sleep(wstart - elapsed)
+            if _interrupted:
+                break
+            karaoke = render_karaoke(all_words, word_idx, window)
+            bar = mini_bar(min(word_idx + 1, total_words), total_words)
+            tty.write(f"\033[1A\r\033[K  {karaoke}\n\r\033[K  {bar}")
+            tty.flush()
+            word_idx += 1
+        sd.wait()
+
+    if HAVE_SD:
+        sd.stop()
+        _restore_terminal()
+        if not _interrupted:
+            bar = mini_bar(total_words, total_words)
+            tty.write(f"\033[1A\r\033[K  {SPOKEN}listo{RESET}\n\r\033[K  {bar}")
+            tty.flush()
+            time.sleep(done_pause)
+            if chime:
+                play_chime_end()
+        tty.write("\033[1A\r\033[K\033[1A\r\033[K\033[1A\r\033[K")
+        tty.write(SHOW_CURSOR)
+        tty.flush()
+
+    total_time = time.monotonic() - t0
+    stats = {"ttfa": ttfa or total_time, "gen_time": 0.0, "audio_duration": audio_total,
              "total_time": total_time, "words": total_words, "chars": len(text), "voice": voice}
     if not show_stats:
-        sys.stderr.write(f"feengspeak: ttfa={ttfa:.2f}s gen={gen_time:.2f}s "
+        sys.stderr.write(f"feengspeak: ttfa={stats['ttfa']:.2f}s "
                          f"total={total_time:.2f}s words={total_words} voice={voice}\n")
     if tty is not sys.stderr:
         tty.close()
