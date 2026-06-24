@@ -133,6 +133,10 @@ _active_tty = None
 _active_tty_t = 0.0
 _muted_ttys = set()
 
+# Modo streaming: cola FIFO de oraciones que el daemon reproduce EN ORDEN
+# (sin preempción entre ellas), alimentada por el hook MessageDisplay.
+_stream_q = queue.Queue()
+
 # Voces en español de Kokoro.
 VOICE_LIST = {
     "ef_dora": "Español, femenina, cálida",
@@ -640,6 +644,24 @@ def _ensure_daemon(wait_seconds=DAEMON_SPAWN_WAIT):
     return False
 
 
+def _stream_worker():
+    """Consume oraciones de _stream_q y las reproduce en orden, una tras otra.
+    A diferencia del op `speak` (que preempta), aquí NO se interrumpe entre
+    oraciones: así una respuesta se lee fluida a medida que llega por streaming."""
+    while True:
+        item = _stream_q.get()
+        if item is None:
+            continue
+        text, voice = item
+        try:
+            k = get_pipe()
+            samples, _sr = k.create(fix_pronunciation(text), voice=voice, speed=1.0, lang=LANG)
+            with _playback_lock:
+                _play_blocking(np.asarray(samples, dtype=np.float32))
+        except Exception as e:
+            _daemon_log(f"stream playback error: {e}")
+
+
 def _handle_client(conn):
     global _daemon_idle_t0, _interrupted, _active_tty, _active_tty_t
     try:
@@ -690,6 +712,24 @@ def _handle_client(conn):
                 "active_tty": None if stale else _active_tty,
                 "muted_ttys": sorted(_muted_ttys),
             }).encode() + b"\n"); return
+
+        if op == "speak_stream":
+            # Encola una oración para lectura en streaming (no preempta).
+            stext = (req.get("text") or "").strip()
+            svoice = req.get("voice") or load_config().get("voice", DEFAULT_VOICE)
+            if stext:
+                _stream_q.put((stext, svoice))
+            conn.sendall(json.dumps({"queued": True}).encode() + b"\n"); return
+
+        if op == "reset_stream":
+            # Nuevo turno: vacía la cola y corta lo que esté sonando.
+            try:
+                while True:
+                    _stream_q.get_nowait()
+            except queue.Empty:
+                pass
+            _stop_playback()
+            conn.sendall(json.dumps({"ok": True}).encode() + b"\n"); return
 
         # op == "speak"
         text = req.get("text", "")
@@ -751,6 +791,9 @@ def cmd_daemon():
     get_pipe()
     _daemon_log(f"kokoro loaded in {time.monotonic()-t0:.2f}s")
 
+    # Worker que reproduce en orden las oraciones del modo streaming.
+    threading.Thread(target=_stream_worker, daemon=True).start()
+
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(SOCK_PATH)
     os.chmod(SOCK_PATH, 0o600)
@@ -797,7 +840,7 @@ def cmd_setup():
     def _has_us(event):
         for entry in hooks.get(event, []):
             for h in entry.get("hooks", []):
-                if "feengspeak" in str(h):
+                if "feengspeak" in str(h).lower():
                     return True
         return False
 
@@ -815,6 +858,14 @@ def cmd_setup():
             "hooks": [{"type": "command", "command": f"{cmd} claim", "timeout": 5}],
         })
         added.append("UserPromptSubmit (claim)")
+
+    # MessageDisplay → hook ligero de streaming. Siempre apunta al stream_hook
+    # (reemplaza cualquier sonda previa). Se activa/desactiva con `feengspeak stream`.
+    stream_cmd = f"{VENV_PYTHON} {os.path.join(BASE_DIR, 'stream_hook.py')}"
+    desired_md = [{"hooks": [{"type": "command", "command": stream_cmd}]}]
+    if hooks.get("MessageDisplay") != desired_md:
+        hooks["MessageDisplay"] = desired_md
+        added.append("MessageDisplay (streaming)")
 
     if not added:
         print(f"{GREEN}FeengSpeak ya está instalado.{RESET}")
@@ -853,6 +904,17 @@ def cmd_toggle(enable):
     print(f"  FeengSpeak: voz {state}")
 
 
+def cmd_stream(enable):
+    cfg = load_config()
+    cfg["stream_mode"] = enable
+    save_config(cfg)
+    if enable:
+        print(f"  FeengSpeak: lectura en {GREEN}streaming{RESET} — lee mientras Claude escribe.")
+        print(f"  {DIM}Requiere el hook MessageDisplay (corre `feengspeak setup`) y reiniciar Claude Code.{RESET}")
+    else:
+        print(f"  FeengSpeak: lectura {GREEN}al terminar{RESET} — modo normal (hook Stop).")
+
+
 def cmd_daemon_status():
     if not _daemon_alive():
         print(f"  {RED}daemon detenido{RESET}"); return
@@ -866,6 +928,10 @@ def cmd_daemon_status():
 
 def cmd_claim():
     if not _daemon_alive():
+        # Pre-calienta el daemon al enviar un prompt, para que esté listo cuando
+        # llegue el streaming de la respuesta. No bloquea (fire-and-forget).
+        if load_config().get("enabled", True):
+            _spawn_daemon()
         return
     _send_to_daemon({"op": "claim", "tty_path": _resolve_tty()}, timeout=1.0)
 
@@ -903,6 +969,11 @@ def cmd_daemon_stop():
 
 
 def main():
+    # `stream on|off` toma argumento, se maneja aparte.
+    if len(sys.argv) >= 2 and sys.argv[1] == "stream":
+        cmd_stream(len(sys.argv) >= 3 and sys.argv[2] == "on")
+        sys.exit(0)
+
     SUBCOMMANDS = {
         "setup", "demo", "on", "off", "claim", "unclaim",
         "mute", "unmute", "toggle", "daemon-status", "daemon-stop",
@@ -952,6 +1023,9 @@ def main():
     if args.text:
         text = " ".join(args.text)
     elif not sys.stdin.isatty():
+        # En modo streaming, MessageDisplay ya leyó en vivo: el Stop hook no relee.
+        if cfg.get("stream_mode"):
+            sys.exit(0)
         raw = sys.stdin.read().strip()
         msg_text = ""
         try:

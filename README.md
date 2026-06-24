@@ -63,6 +63,22 @@ feengspeak daemon-stop     # detiene el daemon
 feengspeak --voice em_alex "texto a leer"
 ```
 
+## Modo streaming (experimental)
+
+Por defecto FeengSpeak lee la respuesta **al terminar** (hook `Stop`). El modo
+streaming la lee **mientras Claude escribe**, oración por oración, usando el hook
+`MessageDisplay` (que entrega el texto en deltas durante el render).
+
+```bash
+feengspeak stream on     # lee en vivo mientras se genera la respuesta
+feengspeak stream off    # vuelve a leer al terminar (modo normal)
+```
+
+Requiere haber corrido `feengspeak setup` (registra el hook `MessageDisplay`) y
+reiniciar Claude Code. Con `stream on`, el hook `Stop` se vuelve no-op para no
+leer dos veces; el daemon encola las oraciones y las reproduce en orden sin
+interrumpirse entre sí. Un prompt nuevo corta la lectura anterior.
+
 ## Cómo funciona
 
 1. Claude Code dispara el hook `Stop` al terminar una respuesta.
