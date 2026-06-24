@@ -13,10 +13,33 @@ reproduce. No es un producto de cara al cliente; es tooling interno del equipo.
 
 - **Motor:** [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) (Kokoro 82M
   vía ONNX Runtime — sin PyTorch, corre en CPU).
-- **Idioma:** español (voces `ef_dora`, `em_alex`, `em_santa`).
-- **Latencia:** el daemon carga el modelo una vez (~2s); luego TTFA ~0.6s gracias a
-  streaming por oración (reproduce la 1ª mientras sintetiza la 2ª).
+- **Bilingüe (auto):** detecta el idioma de cada bloque y lo lee con la voz correcta
+  — español con `em_alex`, inglés US con `am_michael`. Los términos técnicos en
+  inglés dentro del español se pronuncian en inglés.
+- **Lectura en vivo:** lee mientras Claude escribe (hook `MessageDisplay`), oración
+  por oración, no al terminar.
+- **Para dev:** lee todo lo que el agente comunica (código inline, rutas, comandos);
+  solo omite bloques de código largos.
+- **Latencia:** el daemon carga el modelo una vez (~2s); luego TTFA ~0.7s con un
+  pipeline de dos etapas (sintetiza la oración siguiente mientras suena la actual).
 - **Privacidad:** todo local. Nada sale de la máquina.
+
+## Configuración
+
+`~/.config/feengspeak/config.json` (estado de usuario, fuera del repo):
+
+| Clave | Default | Qué hace |
+|-------|---------|----------|
+| `voice` | `em_alex` | Voz española (`ef_dora`, `em_alex`, `em_santa`). |
+| `voice_en` | `am_michael` | Voz inglesa US (`am_michael`, `am_adam`, `am_onyx`, `af_heart`, `af_nova`). |
+| `auto_lang` | `true` | Auto-detecta es/en por bloque. |
+| `english_terms` | `true` | Pronuncia términos de `EN_TERMS` en inglés dentro del español. |
+| `speed` | `0.93` | Velocidad de voz (más bajo = más pausado). |
+| `stream_mode` | — | Lectura en vivo (`feengspeak stream on|off`). |
+| `enabled` | `true` | On/off global (`feengspeak on|off`). |
+
+Tras cambiar la config o el código: `feengspeak daemon-stop` (el daemon revive solo
+y relee la config).
 
 Fork interno de [`claude-voice`](https://github.com/Null-Phnix/claude-voice)
 (MIT, © 2026 Null-Phnix). Ver [`NOTICE`](./NOTICE) y [`LICENSE`](./LICENSE).
