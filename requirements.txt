@@ -1,0 +1,7 @@
+# FeengSpeak — dependencias Python (Python 3.11+)
+kokoro-onnx
+soundfile
+numpy
+# Opcional: habilita resaltado karaoke en terminal. Requiere libportaudio2 del sistema:
+#   sudo apt install -y libportaudio2
+sounddevice

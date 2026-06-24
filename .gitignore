@@ -1,0 +1,6 @@
+# Runtime local — no va a git (pesado / generado / por máquina)
+venv/
+models/
+__pycache__/
+*.pyc
+*.wav

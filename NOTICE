@@ -1,0 +1,18 @@
+FeengSpeak
+Herramienta interna de Feengster.
+
+Este software es un fork interno adaptado de "claude-voice":
+    https://github.com/Null-Phnix/claude-voice
+    Copyright (c) 2026 Null-Phnix — Licencia MIT (ver LICENSE)
+
+Modificaciones principales de Feengster:
+  - Backend TTS cambiado de Kokoro/PyTorch a kokoro-onnx (ONNX Runtime).
+  - Voces e idioma en español (es).
+  - Extracción de la respuesta vía transcript_path del hook Stop
+    (en vez de last_assistant_message), uniendo todos los bloques de
+    texto desde el último prompt real del usuario.
+  - Degradación elegante a aplay cuando no hay PortAudio/sounddevice.
+  - Diccionario de pronunciación y branding en español.
+
+El aviso de copyright y la licencia MIT originales se conservan en LICENSE,
+conforme lo exige dicha licencia.
