@@ -8,7 +8,7 @@ Reglas de desarrollo de FeengSpeak. Overview y uso en [README.md](./README.md).
 
 | Clasificación | Rutas | Política |
 |---------------|-------|----------|
-| Código | `feengspeak.py` | Único archivo fuente: CLI, daemon, hooks, síntesis, render. |
+| Código | `feengspeak.py`, `stream_hook.py` | CLI + daemon + síntesis; `stream_hook.py` es el hook ligero (stdlib) de streaming. |
 | Build/Setup | `install.sh`, `requirements.txt` | Instalación reproducible. Mantener idempotente. |
 | Generado | `venv/`, `models/`, `__pycache__/` | Nunca commitear. Los regenera `install.sh`. |
 | Legal | `LICENSE`, `NOTICE` | MIT del upstream + atribución. **No remover** (lo exige MIT). |
@@ -26,10 +26,21 @@ Reglas de desarrollo de FeengSpeak. Overview y uso en [README.md](./README.md).
 
 - Config de usuario en `~/.config/feengspeak/`; runtime/daemon en `~/.cache/feengspeak/`.
   Nunca escribir estado dentro del repo.
-- Idioma de salida: español. Mensajes de CLI en español neutro.
+- Idioma de salida: bilingüe ES/EN con auto-detección por mensaje. Mensajes de CLI en español neutro.
 - Los hooks se instalan/identifican por el substring `feengspeak` en el comando.
 
-## 3. Licencia
+## 3. Commits (doctrina Feengster)
+
+- **Conventional Commits**: `type(scope): description`. Tipos: `feat`, `fix`,
+  `perf`, `refactor`, `docs`, `chore`, `build`, `ci`, `test`.
+- **Scopes por componente**: `repo`, `daemon`, `stream`, `tts`, `docs`, `build`.
+  El nombre de la feature va en la descripción, no en el scope.
+- **Atómicos**: un commit = un propósito, un cambio completo.
+- **Sin atribución de IA**: nunca incluir `Co-Authored-By: Claude`,
+  "Generated with Claude Code" ni similares. Los commits deben verse
+  human-authored; la responsabilidad es del desarrollador.
+
+## 4. Licencia
 
 Fork interno de `claude-voice` (MIT, Null-Phnix). Conservar `LICENSE` y `NOTICE`
 intactos. Documentar cambios sustanciales del upstream en `NOTICE`.
