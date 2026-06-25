@@ -365,21 +365,64 @@ def fix_pronunciation(text):
 
 # Términos técnicos en inglés que se pronuncian EN INGLÉS (fonemización en-us).
 # Editable: agrega/quita palabras. La detección es por palabra completa, sin
-# distinguir mayúsculas. Si una palabra NO está aquí, se lee en español.
+# distinguir mayúsculas, y cubre el plural automáticamente (commit → commits).
+# Si una palabra NO está aquí, se lee en español.
+#
+# REGLA al agregar: NO incluir palabras que también son español común y se
+# escriben igual (local, final, general, total, normal, real, control, error,
+# version, social, natural, material…); en inglés sonarían mal en frases en
+# español. Solo términos inequívocamente técnico-ingleses.
 EN_TERMS = {
-    # Nombres propios / productos (siempre en inglés)
+    # Nombres propios / productos / herramientas
     "claude", "anthropic", "feengspeak", "kokoro", "piper", "github", "git",
-    "onnx", "python", "warp", "linux", "ubuntu", "docker", "kubernetes",
-    # Jerga git / devops fuertemente anglo
-    "commit", "commits", "deploy", "deployment", "branch", "branches", "merge",
-    "push", "pull", "request", "rebase", "checkout", "clone", "fork", "rollback",
-    "pipeline", "repo", "repository", "release", "staging",
-    # Jerga de desarrollo que se dice en inglés
-    "hook", "hooks", "bug", "bugs", "debug", "frontend", "backend", "framework",
+    "gitlab", "onnx", "python", "node", "yarn", "warp", "linux", "ubuntu",
+    "docker", "kubernetes", "redis", "postgres", "nginx", "bash", "react",
+    "vue", "svelte", "angular", "next", "django", "flask", "rails", "spring",
+    "express", "webpack", "vite", "babel", "eslint", "prettier", "jest",
+    "pytest", "terraform", "ansible", "jenkins", "kafka", "grafana", "mongo",
+    "mongodb", "mysql", "sqlite", "elasticsearch", "graphql", "typescript",
+    "javascript", "golang", "rust",
+    # Git / devops / infra
+    "commit", "deploy", "deployment", "branch", "merge", "push", "pull",
+    "request", "rebase", "checkout", "clone", "fork", "rollback", "pipeline",
+    "repo", "repository", "release", "staging", "diff", "patch", "stash",
+    "tag", "remote", "origin", "upstream", "downstream", "workflow", "runner",
+    "build", "rollout", "container", "image", "namespace", "cluster", "pod",
+    "proxy", "gateway", "load", "balancer", "serverless", "lambda", "throttle",
+    "monolith", "microservice", "webhook", "cron",
+    # Backend / runtime
+    "hook", "bug", "debug", "frontend", "backend", "fullstack", "framework",
     "endpoint", "daemon", "stream", "streaming", "prompt", "token", "runtime",
-    "backend", "fullstack",
+    "config", "setup", "install", "uninstall", "update", "upgrade", "package",
+    "library", "dependency", "import", "export", "function", "default",
+    "output", "input", "log", "logging", "server", "client", "middleware",
+    "query", "cache", "buffer", "socket", "thread", "script", "shell",
+    "terminal", "console", "parser", "wrapper", "loader", "handler", "worker",
+    "queue", "payload", "response", "request", "status", "timeout", "retry",
+    "fallback", "override", "enable", "disable", "toggle", "schema", "mock",
+    "stub", "fixture", "lint", "linter", "compiler", "bundler", "async",
+    "await", "callback", "promise", "iterator", "decorator", "interface",
+    "enum", "boolean", "string", "array", "object", "null", "void", "byte",
+    "session", "header", "body", "json", "yaml", "regex", "flag", "scope",
+    "job", "test", "data", "feature", "issue", "path", "file", "folder",
+    "command", "directory", "deployer",
+    # Base de datos
+    "database", "table", "row", "column", "index", "join", "foreign",
+    "primary", "constraint", "trigger", "view", "transaction", "seed",
+    "migration", "replica", "replication", "snapshot", "backup", "dump",
+    "shard", "sharding", "orm", "upsert", "rollback", "deadlock",
 }
 _TOKEN_RE = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+|\d+|[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\d]+")
+
+
+def _is_en_term(word):
+    """¿Esta palabra se pronuncia en inglés? Cubre el plural inglés (files,
+    commits, hooks) sin listarlo: si quita la `s` final (en palabras >4) y queda
+    un término conocido, también cuenta. El umbral >4 evita falsos como `es`."""
+    w = word.lower()
+    if w in EN_TERMS:
+        return True
+    return len(w) > 4 and w.endswith("s") and w[:-1] in EN_TERMS
 
 
 def _phonemes_for(text):
@@ -398,7 +441,7 @@ def _phonemes_for(text):
             es_buf.clear()
 
     for tok in _TOKEN_RE.findall(text):
-        if tok.isalpha() and tok.lower() in EN_TERMS:
+        if tok.isalpha() and _is_en_term(tok):
             flush_es()
             p = k.tokenizer.phonemize(tok, "en-us")
             if p:
@@ -1063,6 +1106,10 @@ def cmd_claim():
         if load_config().get("enabled", True):
             _spawn_daemon()
         return
+    # El usuario envió un prompt nuevo → ya entendió la respuesta anterior y no
+    # necesita oír el resto. Corta de inmediato la lectura en curso (vacía las
+    # colas y detiene el audio), sin esperar al primer delta del nuevo turno.
+    _send_to_daemon({"op": "reset_stream"}, timeout=1.0)
     _send_to_daemon({"op": "claim", "tty_path": _resolve_tty()}, timeout=1.0)
 
 
