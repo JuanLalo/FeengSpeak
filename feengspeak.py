@@ -545,12 +545,13 @@ def mini_bar(current, total, width=20):
 
 # ── síntesis ──
 def _play_blocking(full_audio):
-    """Reproduce audio completo. Con sounddevice usa sd; si no, aplay."""
+    """Reproduce audio (bloqueante) vía aplay — un proceso fresco por oración.
+    A propósito NO usa sounddevice aquí: en un daemon de larga vida un `sd.wait()`
+    puede colgarse si PortAudio queda en mal estado y bloquear el worker para
+    siempre (todo se encola y nada suena). aplay no acumula ese estado; si una
+    reproducción falla, solo afecta a esa oración. (El karaoke del demo sí usa sd
+    aparte, en speak_and_highlight)."""
     global _aplay_proc
-    if HAVE_SD:
-        sd.play(full_audio, samplerate=SAMPLE_RATE)
-        sd.wait()
-        return
     os.makedirs(RUNTIME_DIR, exist_ok=True)
     wav_path = os.path.join(RUNTIME_DIR, "out.wav")
     pcm = (np.clip(full_audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
