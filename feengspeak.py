@@ -1027,6 +1027,9 @@ def cmd_toggle(enable):
     cfg = load_config()
     cfg["enabled"] = enable
     save_config(cfg)
+    # Al apagar, corta también la lectura que esté en curso (vacía la cola).
+    if not enable and _daemon_alive():
+        _send_to_daemon({"op": "reset_stream"}, timeout=1.0)
     state = f"{GREEN}activada{RESET}" if enable else f"{RED}desactivada{RESET}"
     print(f"  FeengSpeak: voz {state}")
 

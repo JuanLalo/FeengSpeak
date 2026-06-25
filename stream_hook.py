@@ -54,9 +54,12 @@ def _detect_lang(text):
 
 
 def _stream_on():
+    """Activo solo si la voz está habilitada (switch maestro `enabled`) Y el modo
+    streaming está encendido. Así `feengspeak off` calla también el streaming."""
     try:
         with open(CONFIG_PATH) as f:
-            return bool(json.load(f).get("stream_mode"))
+            cfg = json.load(f)
+        return cfg.get("enabled", True) and bool(cfg.get("stream_mode"))
     except Exception:
         return False
 
