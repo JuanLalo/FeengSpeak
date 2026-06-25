@@ -9,6 +9,7 @@ Reglas de desarrollo de FeengSpeak. Overview y uso en [README.md](./README.md).
 | Clasificación | Rutas | Política |
 |---------------|-------|----------|
 | Código | `feengspeak.py`, `stream_hook.py` | CLI + daemon + síntesis; `stream_hook.py` es el hook ligero (stdlib) de streaming. |
+| Tests | `test_normalize.py` | `unittest` puro (sin modelo) de la normalización de texto a habla. Correr: `venv/bin/python -m unittest test_normalize`. |
 | Build/Setup | `install.sh`, `requirements.txt` | Instalación reproducible. Mantener idempotente. |
 | Generado | `venv/`, `models/`, `__pycache__/` | Nunca commitear. Los regenera `install.sh`. |
 | Legal | `LICENSE`, `NOTICE` | MIT del upstream + atribución. **No remover** (lo exige MIT). |
@@ -16,6 +17,10 @@ Reglas de desarrollo de FeengSpeak. Overview y uso en [README.md](./README.md).
 ### 1.2 Principios
 
 - **Un solo archivo.** Toda la lógica vive en `feengspeak.py`. No fragmentar sin razón fuerte.
+- **Normalización a habla.** Antes de sintetizar, `normalize_for_speech(text, lang)`
+  reescribe dev-speak (identificadores, rutas, versiones, unidades, acrónimos) a
+  forma hablada. Corre dentro de `_synthesize` (idioma ya resuelto), así cubre
+  Stop y streaming. Es puro texto: toda regla nueva va con su test en `test_normalize.py`.
 - **Relocatable.** `BASE_DIR` se deriva de la ubicación del script; `venv/` y `models/`
   son relativos. Mover el repo no debe romper rutas.
 - **Local-first.** Nada de red en runtime. Sin claves de API. Sin telemetría.

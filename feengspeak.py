@@ -405,7 +405,7 @@ EN_TERMS = {
     "enum", "boolean", "string", "array", "object", "null", "void", "byte",
     "session", "header", "body", "json", "yaml", "regex", "flag", "scope",
     "job", "test", "data", "feature", "issue", "path", "file", "folder",
-    "command", "directory", "deployer",
+    "command", "directory", "deployer", "stdin", "stdout", "stderr",
     # Base de datos
     "database", "table", "row", "column", "index", "join", "foreign",
     "primary", "constraint", "trigger", "view", "transaction", "seed",
@@ -477,6 +477,104 @@ def _detect_lang(text):
     return "en-us" if (en >= 2 and en > es + 1) else "es"
 
 
+# ── normalización de texto a habla (dev-speak → forma hablada) ──
+# Convierte lo que peor suena en una herramienta de dev (identificadores, rutas,
+# versiones, unidades, símbolos, acrónimos) a una forma que el TTS lee natural.
+# Corre dentro de _synthesize, ya con el idioma resuelto, así aplica a ambos
+# caminos (Stop y streaming) y deletrea acrónimos según el idioma. Es puro texto
+# (sin modelo): testeable de forma aislada.
+
+# Nombres de letras en español, para deletrear acrónimos (SQL → ese cu ele).
+_LETTER_ES = {
+    "a": "a", "b": "be", "c": "ce", "d": "de", "e": "e", "f": "efe",
+    "g": "ge", "h": "hache", "i": "i", "j": "jota", "k": "ka", "l": "ele",
+    "m": "eme", "n": "ene", "ñ": "eñe", "o": "o", "p": "pe", "q": "cu",
+    "r": "erre", "s": "ese", "t": "te", "u": "u", "v": "uve",
+    "w": "doble u", "x": "equis", "y": "ye", "z": "zeta",
+}
+
+# Acrónimos que se dicen como palabra (NO se deletrean) o con forma fija.
+_ACRONYM_SAY_ES = {
+    "JSON": "yeson", "YAML": "yamel", "REST": "rest", "CRUD": "crud",
+    "SOAP": "sop", "RAM": "ram", "ROM": "rom", "GUI": "gui", "CORS": "cors",
+    "ASCII": "aski", "OK": "okey", "UUID": "u u i de",
+}
+
+# Extensiones de archivo → palabra hablada (config.json → "config json").
+_EXT_WORD = {
+    "py": "python", "js": "javascript", "ts": "typescript", "tsx": "typescript",
+    "jsx": "javascript", "json": "yeson", "md": "markdown", "sh": "shell",
+    "yml": "yamel", "yaml": "yamel", "toml": "toml", "cfg": "config",
+    "ini": "ini", "lock": "lock", "log": "log", "env": "env", "txt": "texto",
+    "csv": "ce ese uve",
+}
+
+# Unidades tras un número → palabra hablada (340 MB → "340 megabytes").
+_UNIT_WORD = {
+    "ms": "milisegundos", "s": "segundos", "kb": "kilobytes",
+    "mb": "megabytes", "gb": "gigabytes", "tb": "terabytes",
+    "hz": "hertz", "khz": "kilohertz", "mhz": "megahertz", "ghz": "gigahertz",
+    "fps": "cuadros por segundo",
+}
+
+_EXT_ALT = "|".join(sorted(_EXT_WORD, key=len, reverse=True))
+_UNIT_ALT = "|".join(sorted(_UNIT_WORD, key=len, reverse=True))
+
+
+def _spell_acronym_es(tok):
+    """Acrónimo en español: forma fija si la hay (JSON→yeson), si no, deletreo."""
+    if tok in _ACRONYM_SAY_ES:
+        return _ACRONYM_SAY_ES[tok]
+    return " ".join(_LETTER_ES.get(c.lower(), c) for c in tok)
+
+
+def _split_identifier(tok):
+    """Parte un identificador en palabras (snake/camel), salvo que sea una marca
+    conocida (en EN_TERMS): así `MessageDisplay`→"Message Display" pero `GitHub`
+    y `MongoDB` quedan intactos para pronunciarse como nombre propio."""
+    if tok.lower().replace("_", "") in EN_TERMS:
+        return tok
+    t = tok.strip("_").replace("_", " ")
+    t = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", t)
+    t = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", t)
+    return t
+
+
+def normalize_for_speech(text, lang="es"):
+    """Reescribe el texto a una forma que el TTS lee natural. Idempotente en la
+    práctica; el deletreo de acrónimos solo se aplica en español (la voz inglesa
+    ya los pronuncia razonable). Los números los convierte a palabra el propio
+    espeak en el idioma destino, así que aquí no se tocan."""
+    s = text
+    # 1. Extensiones conocidas: nombre.ext → "nombre <ext>" (antes de partir rutas).
+    s = re.sub(rf"\b([\w-]+)\.({_EXT_ALT})\b",
+               lambda m: f"{m.group(1)} {_EXT_WORD[m.group(2).lower()]}",
+               s, flags=re.IGNORECASE)
+    # 2. Rutas: ~ y / fuera (conserva fracciones 1/2); puntos de ruta/módulo.
+    s = s.replace("~", " ")
+    s = re.sub(r"(?<!\d)/(?!\d)", " ", s)
+    s = re.sub(r"(?<!\w)\.(?=[A-Za-z])", "", s)          # dotfile .config → config
+    s = re.sub(r"(?<=[A-Za-z])\.(?=[A-Za-z])", " ", s)   # módulo.func → módulo func
+    # 3. Unidades tras número (antes de los acrónimos: MB, GB van en mayúsculas).
+    s = re.sub(rf"(\d)\s*({_UNIT_ALT})\b",
+               lambda m: f"{m.group(1)} {_UNIT_WORD[m.group(2).lower()]}",
+               s, flags=re.IGNORECASE)
+    # 4. Identificadores → palabras (snake/camel), preservando marcas conocidas.
+    s = re.sub(r"[A-Za-z_][A-Za-z0-9_]*", lambda m: _split_identifier(m.group(0)), s)
+    s = re.sub(r"(?<=[a-z])-(?=[a-z])", " ", s)          # kebab: auto-detect
+    # 5. Acrónimos (2-5 mayúsculas seguidas). Solo se deletrean en español.
+    if lang == "es":
+        s = re.sub(r"\b[A-Z]{2,5}\b",
+                   lambda m: _spell_acronym_es(m.group(0)), s)
+    # 6. Versiones: v1.2 → versión 1.2.
+    s = re.sub(r"\bv(?=\d)", "versión ", s, flags=re.IGNORECASE)
+    # 8. Flechas → pausa; backticks/acentos circunflejos sueltos → espacio.
+    s = re.sub(r"-+>|=>|→", " , ", s)
+    s = re.sub(r"[`^]", " ", s)
+    # 9. Colapsa espacios.
+    return re.sub(r"\s{2,}", " ", s).strip()
+
+
 def _synthesize(text, voice, lang=None):
     """Sintetiza una oración. `lang` fija el idioma (lo pasa el hook de streaming,
     ya bloqueado por mensaje); si es None y `auto_lang`, se detecta. Inglés → voz
@@ -486,6 +584,7 @@ def _synthesize(text, voice, lang=None):
     speed = float(cfg.get("speed", 1.0))
     if lang is None:
         lang = _detect_lang(text) if cfg.get("auto_lang", True) else cfg.get("lang", LANG)
+    text = normalize_for_speech(text, lang)
 
     if lang == "en-us":
         v = cfg.get("voice_en", DEFAULT_VOICE_EN)
